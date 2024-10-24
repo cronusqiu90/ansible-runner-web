@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<style>
+		textarea {
+		    width: 40%;
+		}
+	</style>
+	<meta charset="UTF-8">
+	<title>Create Task</title>
+</head>
+<body>
+	<form action="/task" method="POST">
+		<label for="name">Task Name:</label>
+		<input type="text" id="name" name="name" required><br>
+        <h2>SHELL:</h2>
+		<textarea id="playbook" name="playbook" rows="10" required>
+- name: define task name, like: show disk usage
+  ansible.builtin.shell: shell command, like: df -h
+  args:
+    chdir: the path to run shell</textarea><br>
+        <h3>Inventory</h3>
+		<textarea id="inventory" name="inventory" rows="20" placeholder="Enter the server tag list (one per line)" required></textarea><br>
+		<input type="submit" value="Submit">
+	</form>
+</body>
+</html>

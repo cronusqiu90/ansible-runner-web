@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<title>Ansible Runner Task</title>
+
+</head>
+<body>
+	<h1>Task List</h1>
+
+    <a href="/task">New Task</a>
+    <p></p>
+	<table width="100%" border="1" align="center">
+		<tr>
+            <th>ID</th>
+			<th>Name</th>
+			<!-- <th>Playbook</th> -->
+			<!-- <th>Inventory</th> -->
+			<th>Status</th>
+			<th>Updated At</th>
+			<th>Result</th>
+            <th>Ops</th>
+		</tr> {{ range .tasks }} <tr>
+            <td align="center">
+                <a href="/task/{{ .TaskID }}">{{.ID }}</a>
+            </td>
+			<td align="center">{{.Name }}</td>
+			<!-- <td align="center">{{.Playbook.Name }}</td> -->
+			<!-- <td align="center">{{.Inventory.Name }}</td> -->
+			<td align="center">
+                {{ if eq .Status 0 }}
+                    <span>Waiting</span>
+                {{  else if eq .Status 1 }}
+                    <span>Running</span>
+                {{  else if eq .Status 2 }}
+                    <span>Succeeded</span>
+                {{  else if eq .Status 3 }}
+                    <span>Error</span>
+                {{ else }}
+                    <span>Unknown</span>
+                {{ end}}
+            </td>
+			<td align="center">{{.UpdatedAt }}</td>
+            <td align="center">
+                <a href="/result/{{ .TaskID }}">Show Result</a>
+            </td>
+            <td align="center">
+                {{ if eq .Status 1 }}
+                    
+                {{ else }}
+                    <a href="/runTask/{{ .TaskID }}">Run</a>
+                {{ end }}
+            </td>
+		</tr> {{ end }}
+	</table>
+</body>
+</html>
