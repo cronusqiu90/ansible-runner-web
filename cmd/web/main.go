@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"html/template"
 	"io"
 	"log"
@@ -66,8 +67,8 @@ type Task struct {
 
 const (
 	SSH_USER_PRI_KEY_FILE = "/home/user/.ssh/id_rsa"
-	SSH_USER              = "user"
-	SSH_PORT              = 22
+	SSH_USER              = "auser"
+	SSH_PORT              = 8513
 )
 
 var (
@@ -88,12 +89,16 @@ func init() {
 		os.Mkdir(rootDir, 0755)
 	}
 	flag.StringVar(&address, "s", "0.0.0.0:17000", "address to listen on")
+	os.Setenv("ANSIBLE_STDOUT_CALLBACK", "json")
 }
 
 func main() {
 	flag.Parse()
 
 	setupDB()
+
+	gin.SetMode(gin.ReleaseMode)
+	gin.DefaultWriter = io.Discard
 
 	r := gin.Default()
 	templ := template.Must(template.New("").ParseFS(fs, "templates/*.html"))
@@ -129,7 +134,7 @@ func main() {
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		name := <-quit
-		log.Printf("Warn: received signal: %v\n", name)
+		fmt.Printf("Warn: received signal: %v\n", name)
 		close(taskChan)
 	}()
 
@@ -199,7 +204,6 @@ func createTask(c *gin.Context) {
 
 	var w bytes.Buffer
 	w.WriteString("- hosts: servers\n")
-	w.WriteString("  gather_facts: false\n")
 	w.WriteString("  tasks:\n")
 	playbookContent = strings.ReplaceAll(playbookContent, "\r", "")
 	for _, v := range strings.Split(playbookContent, "\n") {
@@ -304,6 +308,7 @@ func updateTask(task Task) error {
 		Task{
 			Status:    task.Status,
 			UpdatedAt: time.Now(),
+			Error:     task.Error,
 		})
 	if tx.Error != nil {
 		return tx.Error
@@ -313,7 +318,7 @@ func updateTask(task Task) error {
 
 func startRunAnsiblePlaybookService(index int, wait *sync.WaitGroup) {
 	defer func() {
-		log.Printf("# %d service stopped\n", index)
+		fmt.Printf("# %d service stopped\n", index)
 		wait.Done()
 	}()
 	for {
@@ -326,7 +331,7 @@ func startRunAnsiblePlaybookService(index int, wait *sync.WaitGroup) {
 			var task Task
 			tx := db.Preload("Playbook").Preload("Inventory").Preload("User").First(&task, "task_id = ?", taskId)
 			if tx.Error != nil {
-				log.Printf("Error: task(%v) %v\n", taskId, tx.Error)
+				fmt.Printf("Error: task(%v) %v\n", taskId, tx.Error)
 				continue
 			}
 
@@ -335,20 +340,20 @@ func startRunAnsiblePlaybookService(index int, wait *sync.WaitGroup) {
 				UpdatedAt: time.Now(),
 			})
 			if tx.Error != nil {
-				log.Printf("Error: task(%v) %v\n", taskId, tx.Error)
+				fmt.Printf("Error: task(%v) %v\n", taskId, tx.Error)
 				continue
 			}
 
 			err := runAnsiblePlaybook(&task)
 			if err != nil {
 				task.Status = 3
-				task.Error = err.Error()
+				task.Error = fmt.Sprintf("%v", err)
 			} else {
 				task.Status = 2
+				task.Error = ""
 			}
-
 			if err := updateTask(task); err != nil {
-				log.Printf("Error: task(%v) %v\n", task, err)
+				fmt.Printf("Error: task(%v) %v\n", task, err)
 				continue
 			}
 
@@ -357,69 +362,50 @@ func startRunAnsiblePlaybookService(index int, wait *sync.WaitGroup) {
 }
 
 func runAnsiblePlaybook(task *Task) error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(10)*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(30)*time.Minute)
 	defer cancel()
 
 	buff := new(bytes.Buffer)
+
 	cmd := playbook.NewAnsiblePlaybookCmd(
 		playbook.WithPlaybooks(task.Playbook.Path),
 		playbook.WithPlaybookOptions(&playbook.AnsiblePlaybookOptions{
-			Become: false,
+			Become:  false,
+			Verbose: true,
 			ExtraVars: map[string]interface{}{
-				"gather_facts":                 false,
-				"ansible_ssh_private_key_file": SSH_USER_PRI_KEY_FILE,
-				"ansible_user":                 SSH_USER,
-				"ansible_port":                 SSH_PORT,
+				"ansible_ssh_private_key_file": "/root/.ssh/id_rsa",
+				"ansible_user":                 "auser",
+				"ansible_port":                 8513,
 			},
 			Inventory:     task.Inventory.Path,
 			SSHCommonArgs: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+			User:          "auser",
 		}),
 	)
+	fmt.Printf("[%s] %s\n", task.TaskID, cmd.String())
+
 	exec := stdoutcallback.NewJSONStdoutCallbackExecute(
 		execute.NewDefaultExecute(
+			execute.WithEnvVars(map[string]string{"ANSIBLE_STDOUT_CALLBACK": "json"}),
 			execute.WithCmd(cmd),
+			execute.WithErrorEnrich(playbook.NewAnsiblePlaybookErrorEnrich()),
 			execute.WithWrite(io.Writer(buff)),
+			execute.WithWriteError(io.Writer(buff)),
 		),
 	)
+
 	if err := exec.Execute(ctx); err != nil {
-		return err
-	}
-	res, err := results.ParseJSONResultsStream(io.Reader(buff))
-	if err != nil {
-		return err
+		fmt.Printf("[%s] failed to exec: %v", task.TaskID, err)
 	}
 
-	raw, err := json.MarshalIndent(res, "", "    ")
+	raw, err := io.ReadAll(io.Reader(buff))
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read result: %v", err)
 	}
-
 	resultPath := filepath.Join(rootDir, task.TaskID, "result.json")
 	if err := os.WriteFile(resultPath, raw, 0644); err != nil {
-		return err
+		fmt.Println("failed to write result: %v", err)
 	}
-	// for _, play := range res.Plays {
-	// 	for _, task := range play.Tasks {
-	// 		for hostname, item := range task.Hosts {
-	// 			if item.Skipped {
-	// 				continue
-	// 			}
-	// 			fmt.Println("+------+")
-	// 			fmt.Println("> Host:", hostname)
-	// 			fmt.Println("> Task:", task.Task.Name)
-	// 			fmt.Println("> Cmd :", item.Cmd)
-	// 			if item.Unreachable {
-	// 				fmt.Println("> Stat: LOST")
-	// 				continue
-	// 			}
-	// 			if item.Failed {
-	// 				fmt.Println("> Stat:", item.Failed)
-	// 				fmt.Println("> Err :", item.Stderr)
-	// 				continue
-	// 			}
-	// 			fmt.Println("> Out :", item.Stdout)
-	// 		}
-	// 	}
-	// }
+
 	return nil
 }
