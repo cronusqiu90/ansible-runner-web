@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"log"
-	"time"
-
-	"fmt"
 	"os"
+	"time"
 
 	"github.com/apenella/go-ansible/v2/pkg/execute"
 	"github.com/apenella/go-ansible/v2/pkg/execute/stdoutcallback"
@@ -30,8 +29,8 @@ func main() {
 	defer cancel()
 
 	ansiblePlaybookOptions := &playbook.AnsiblePlaybookOptions{
+		Verbose: false,
 		Become:  false,
-		Verbose: true,
 		ExtraVars: map[string]interface{}{
 			"ansible_ssh_private_key_file": "/root/.ssh/id_rsa",
 			"ansible_user":                 "auser",
@@ -48,10 +47,13 @@ func main() {
 	)
 	fmt.Println(cmd.String())
 
-	exec := stdoutcallback.NewDebugStdoutCallbackExecute(
+	env := map[string]string{"ANSIBLE_STDOUT_CALLBACK": "json"}
+
+	exec := stdoutcallback.NewJSONStdoutCallbackExecute(
+		//exec := stdoutcallback.NewDebugStdoutCallbackExecute(
 		execute.NewDefaultExecute(
+			execute.WithEnvVars(env),
 			execute.WithCmd(cmd),
-			execute.WithEnvVars(map[string]string{"ANSIBLE_STDOUT_CALLBACK": "json"}),
 			execute.WithErrorEnrich(playbook.NewAnsiblePlaybookErrorEnrich()),
 			execute.WithWrite(io.Writer(buff)),
 		),
@@ -63,6 +65,8 @@ func main() {
 	}
 
 	body, err := io.ReadAll(io.Reader(buff))
+	fmt.Println(string(body))
+
 	if err != nil {
 		log.Fatal(err)
 	}
